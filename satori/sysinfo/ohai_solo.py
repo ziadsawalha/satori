@@ -68,7 +68,7 @@ def system_info(client):
             "Target platform was %s", client.platform_info['dist'])
     else:
         command = "unset GEM_CACHE GEM_HOME GEM_PATH && sudo ohai-solo"
-        output = client.execute(command, escalate=True, concurrency=False)
+        output = client.execute(command, escalate=True, allow_many=False)
         not_found_msgs = ["command not found", "Could not find ohai"]
         if any(m in k for m in not_found_msgs
                for k in list(output.values()) if isinstance(k,
@@ -110,16 +110,16 @@ def install_remote(client):
 
         # Download to host
         command = ohai_cmd
-        client.execute(command, wd='/tmp', escalate=True, concurrency=False)
+        client.execute(command, wd='/tmp', escalate=True, allow_many=False)
 
         # Run install
         command = install_ohai_cmd
         output = client.execute(command, wd='/tmp', with_exit_code=True,
-                                escalate=True, concurrency=False)
+                                escalate=True, allow_many=False)
 
         # Be a good citizen and clean up your tmp data
         command = rm_install_cmd
-        client.execute(command, wd='/tmp', escalate=True, concurrency=False)
+        client.execute(command, wd='/tmp', escalate=True, allow_many=False)
 
         # Process install command output
         if output['exit_code'] != 0:
