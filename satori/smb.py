@@ -10,10 +10,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""Windows remote client module implemented using psexec.py.
-
-bla
-"""
+"""Windows remote client module implemented using contrib/psexec.py."""
 
 import eventlet
 eventlet.monkey_patch()
@@ -48,6 +45,13 @@ def _posh_encode(command):
     :param  command:    command to encode
     """
     return base64.b64encode(command.encode('utf-16')[2:])
+
+def delete(obj):
+    """Try to delete, ignoring errors."""
+    try:
+        del obj
+    except Exception:
+        pass
 
 
 class SubprocessError(Exception):
@@ -95,7 +99,7 @@ class SMBClient(object):  # pylint: disable=R0902
         self.ssh_tunnel = None
         self._substituted_command = None
 
-        #creating temp file to talk to _process with
+        # creating temp file to talk to _process with
         self._file_write = tempfile.NamedTemporaryFile()
         self._file_read = open(self._file_write.name, 'r')
 
@@ -114,7 +118,7 @@ class SMBClient(object):  # pylint: disable=R0902
             LOG.debug("DEBUG: Following arguments passed into PSE constructor "
                       "not used: %s", kwargs.keys())
 
-    def __del__(self):
+    def _release(self):
         """Destructor of the PSE class.
 
         This method will be called when an instance of this class is about to
@@ -124,7 +128,7 @@ class SMBClient(object):  # pylint: disable=R0902
         """
         try:
             self.close()
-        except ValueError:
+        except Exception:
             pass
 
     @classmethod
@@ -155,7 +159,7 @@ class SMBClient(object):  # pylint: disable=R0902
         This will tunnel a local ephemeral port to the host's port.
         This will preserve the original host and port
         """
-        self.ssh_tunnel = tunnel.connect(self.host, self.port, self.gateway)
+        self.ssh_tunnel = tunnel.Tunnel(self.host, self.port, self.gateway)
         self._orig_host = self.host
         self._orig_port = self.port
         self.host, self.port = self.ssh_tunnel.address
@@ -186,31 +190,36 @@ class SMBClient(object):  # pylint: disable=R0902
         This will create a subprocess.Popen() instance and communicate with it
         via _file_read/_file_write and _process.stdin
         """
-        if self._connected and self._process:
-            if self._process.poll() is None:
-                return
-            else:
-                self._process.wait()
-                if self.gateway:
-                    self.shutdown_tunnel()
-        if self.gateway:
-            self.create_tunnel()
-        self._substituted_command = self._command % (os.path.dirname(__file__),
-                                                     self.port,
-                                                     self.username,
-                                                     self.password,
-                                                     self.host)
-        self._process = subprocess.Popen(shlex.split(
-                                         self._substituted_command),
-                                         stdout=self._file_write,
-                                         stderr=subprocess.STDOUT,
-                                         stdin=subprocess.PIPE,
-                                         close_fds=True,
-                                         bufsize=0)
-        output = ''
-        while not self._prompt_pattern.findall(output):
-            output += self._get_output()
-        self._connected = True
+
+        try:
+            if self._connected and self._process:
+                if self._process.poll() is None:
+                    return
+                else:
+                    self._process.wait()
+                    if self.gateway:
+                        self.shutdown_tunnel()
+            if self.gateway:
+                self.create_tunnel()
+            self._substituted_command = self._command % (os.path.dirname(__file__),
+                                                            self.port,
+                                                            self.username,
+                                                            self.password,
+                                                            self.host)
+            self._process = subprocess.Popen(shlex.split(
+                                                self._substituted_command),
+                                                stdout=self._file_write,
+                                                stderr=subprocess.STDOUT,
+                                                stdin=subprocess.PIPE,
+                                                close_fds=True,
+                                                bufsize=0)
+            output = ''
+            while not self._prompt_pattern.findall(output):
+                output += self._get_output()
+            self._connected = True
+        except Exception:
+            self.close()
+            raise
 
     def close(self):
         """Close the psexec connection by sending 'exit' to the subprocess.
@@ -221,21 +230,26 @@ class SMBClient(object):  # pylint: disable=R0902
         try:
             self._process.communicate('exit')
         except Exception as exc:
-            LOG.warning("ERROR: Failed to close %s: %s", self, str(exc))
-            del exc
+            LOG.warning("Failed to close %s: %s", self, str(exc))
         try:
             if self.gateway:
                 self.shutdown_tunnel()
                 self.gateway.close()
         except Exception as exc:
-            LOG.warning("ERROR: Failed to close gateway %s: %s", self.gateway,
+            LOG.warning("Failed to close gateway %s: %s", self.gateway,
                         str(exc))
-            del exc
         finally:
             if self._process:
-                LOG.warning("Killing process: %s", self._process)
-                subprocess.call(['pkill', '-STOP', '-P',
-                                str(self._process.pid)])
+                LOG.debug("Killing process: %s", self._process)
+                try:
+                    subprocess.call(shlex.split('pkill -STOP -P %s'
+                                                % self._process.pid))
+                except Exception:
+                    LOG.warning("Failed to pkill subprocess w/ pid: %s",
+                                getattr(self._process, 'pid', 'N/A'))
+                    pass
+            delete(self._process)
+            delete(self.gateway)
 
     def remote_execute(self, command, powershell=True, retry=0, **kwargs):
         """Execute a command on a remote host.
@@ -251,17 +265,21 @@ class SMBClient(object):  # pylint: disable=R0902
         if powershell:
             command = ('powershell -EncodedCommand %s' %
                        _posh_encode(command))
-        self._process.stdin.write('%s\n' % command)
         try:
+            self._process.stdin.write('%s\n' % command)
             output = self._get_output()
             output = "\n".join(output.splitlines()[:-1]).strip()
             return output
         except SubprocessError:
             if not retry:
+                self.close()
                 raise
             else:
                 return self.remote_execute(command, powershell=powershell,
                                            retry=retry - 1)
+        except Exception:
+            self.close()
+            raise
 
     def _get_output(self, prompt_expected=True, wait=200):
         """Retrieve output from _process.
