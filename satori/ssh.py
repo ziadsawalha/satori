@@ -189,7 +189,7 @@ class SSH(paramiko.SSHClient):  # pylint: disable=R0902
             else:
                 plat = {'dist': 'unknown'}
                 LOG.warning("Blank response from host '%s': %s", self.host,
-                            output, exc_info=exc)
+                            output)
             self._platform_info = plat
         return self._platform_info
 
